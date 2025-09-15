@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="es" oncontextmenu="return false">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>San Mateo Atenco — Reporte de Incidentes</title>
+
+<!-- ===== CSP básica (permite inline por este archivo único) ===== -->
+<meta http-equiv="Content-Security-Policy" content="
+default-src 'self';
+script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net;
+style-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net;
+img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://www.sanmateoatenco.gob.mx;
+connect-src 'self' https://nominatim.openstreetmap.org;
+font-src 'self' data:;
+">
+
+<!-- Leaflet + plugins -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+<script src="https://unpkg.com/leaflet-easyprint/dist/bundle.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+
+<!-- BD offline + bcrypt + pouchdb-find -->
+<script src="https://cdn.jsdelivr.net/npm/pouchdb@8.0.1/dist/pouchdb.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pouchdb-find@7.3.1/dist/pouchdb.find.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
+
+<!-- Sanitización -->
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
+
+<!-- Gráficas y QR (para PDF) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrious@4.0.2/dist/qrious.min.js"></script>
+
+<style>
+:root{
+  --bg:#050812; --panel:#0b1020; --text:#e6e9ef; --muted:#9aa3b2; --border:rgba(255,255,255,.14);
+  --primary:#22d3ee; --accent:#a78bfa; --good:#10b981; --warn:#f59e0b; --bad:#ef4444;
+  --chip:#151b2e; --glass:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.04));
+  --shadow:0 22px 60px rgba(0,0,0,.45);
+}
+body.light{
+  --bg:#f6f7fb; --panel:#ffffff; --text:#0b132b; --muted:#4b5563; --border:rgba(0,0,0,.12);
+  --chip:#eef2ff; --glass:#fff; --shadow:0 18px 40px rgba(0,0,0,.10);
+}
+
+/* Base */
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial,sans-serif;-webkit-user-select:none;user-select:none}
+#map{position:fixed;inset:0}
+.leaflet-container{background:#050812}
+
+/* Top bar */
+.topbar{position:fixed;top:12px;left:12px;right:12px;z-index:1000;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:12px;background:var(--glass);border:1px solid var(--border);border-radius:16px;padding:10px 16px;backdrop-filter:blur(10px);box-shadow:var(--shadow)}
+.brand img{height:48px;width:auto;object-fit:contain;filter:drop-shadow(0 2px 8px rgba(0,0,0,.12))}
+.brand h1{margin:0;font-size:18px;letter-spacing:.3px;font-weight:800}
+.top-actions{display:flex;gap:8px}
+.chip{border:1px solid var(--border);border-radius:999px;padding:8px 14px;font-size:12px;background:var(--chip);color:var(--text);min-height:44px;display:inline-flex;align-items:center}
+.btn-chip{cursor:pointer}
+
+/* Left panel */
+.panel{position:fixed;left:12px;top:72px;z-index:900;display:grid;gap:12px}
+.card{background:var(--glass);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:16px;padding:12px;min-width:300px;box-shadow:var(--shadow);animation:pop .24s ease}
+@keyframes pop{from{transform:translateY(-6px);opacity:0}to{transform:none;opacity:1}}
+.card h3{margin:.2rem 0 .6rem;font-size:13px;color:#cbd5e1;text-transform:uppercase;letter-spacing:.35px}
+body.light .card h3{color:#4b5563}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.small{color:var(--muted);font-size:12px}
+.legend{display:grid;grid-template-columns:16px 1fr;gap:6px 8px;align-items:center;font-size:12.5px;margin-top:4px}
+.sw{width:16px;height:16px;border-radius:4px;border:1px solid rgba(255,255,255,.25)}
+.btn{cursor:pointer;border:1px solid var(--border);background:#0b132b;color:#e6e9ef;padding:12px 14px;border-radius:12px;font-weight:700;font-size:13px;transition:.2s transform,.2s box-shadow,.2s background;min-height:44px}
+body.light .btn{background:#ffffff;color:#0b132b}
+.btn:hover{transform:translateY(-1px);box-shadow:var(--shadow);background:#13234a}
+body.light .btn:hover{background:#f3f4f6}
+.btn.primary{background:linear-gradient(135deg,rgba(34,211,238,.26),rgba(167,139,250,.22))}
+.btn.ghost{background:transparent}
+
+/* Inputs */
+label{font-size:13px;color:#d1d5db}
+body.light label{color:#334155}
+input[type="text"],input[type="password"],input[type="datetime-local"],input[type="date"],textarea,select,input[type="file"]{
+  width:100%;border:1px solid var(--border);background:#0e162c;color:#e6e9ef;padding:12px;border-radius:12px;color-scheme:dark;outline:none;min-height:44px
+}
+body.light input[type="text"],body.light input[type="password"],body.light input[type="datetime-local"],body.light input[type="date"],body.light textarea,body.light select,body.light input[type="file"]{
+  background:#fff;color:#0b132b;color-scheme:light
+}
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.85)}
+body.light input[type="date"]::-webkit-calendar-picker-indicator,
+body.light input[type="datetime-local"]::-webkit-calendar-picker-indicator{filter:none}
+input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{-webkit-text-fill-color:#e6e9ef !important; box-shadow:0 0 0px 1000px #0e162c inset !important; transition:background-color 9999s ease-in-out 0s !important;}
+body.light input:-webkit-autofill,body.light input:-webkit-autofill:hover,body.light input:-webkit-autofill:focus{-webkit-text-fill-color:#0b132b !important; box-shadow:0 0 0px 1000px #fff inset !important;}
+textarea{min-height:86px;resize:vertical}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.actions{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+.thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.thumbs img{width:110px;height:82px;object-fit:cover;border-radius:10px;border:1px solid var(--border)}
+
+/* Right tools */
+.tools{position:fixed;right:12px;bottom:14px;z-index:800;display:flex;flex-direction:column;gap:10px}
+.tools .btn{background:#0d142b;min-width:220px;justify-content:center}
+body.light .tools .btn{background:#fff}
+
+/* Toast & empty state */
+.toast{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#0d142b;border:1px solid var(--border);padding:10px 14px;border-radius:12px;z-index:1300;display:none;box-shadow:var(--shadow);color:#fff}
+.empty{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:700;background:var(--glass);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:16px;padding:16px 18px;color:#d9deea;display:none}
+.empty b{display:block;margin-bottom:4px}
+
+/* Popup PRO */
+.leaflet-popup-content{margin:10px 12px}
+.popup{max-width:min(420px,84vw)}
+.popup .head{display:flex;align-items:center;gap:10px;margin-bottom:2px}
+.popup .title{font-weight:800;font-size:16px;color:#111;background:#fff;border-radius:10px;padding:2px 8px}
+.popup .date{font-size:12px;color:#7a8699;margin:0 0 6px 0}
+.popup .pills{display:flex;gap:6px;margin:6px 0;flex-wrap:wrap}
+.pill{font-size:11px;padding:4px 8px;border-radius:999px;border:1px solid #e6e9ef;background:#0e162c;color:#e6e9ef}
+.pill.red{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.45);color:#ef4444}
+.pill.amber{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.45);color:#f59e0b}
+.pill.green{background:rgba(16,185,129,.12);border-color:rgba(16,185,129,.45);color:#10b981}
+.popup .meta-row{display:flex;gap:6px;align-items:center;margin:6px 0}
+.popup .k{font-weight:700}
+.popup img{max-width:220px;border-radius:12px;display:block;margin-top:8px;box-shadow:0 8px 20px rgba(0,0,0,.18)}
+.popup .btn-mini{border:1px solid #cfd6e4;background:#fff;color:#111;padding:6px 10px;border-radius:10px;font-size:12px;cursor:pointer}
+.popup .btn-line{display:inline-flex;gap:6px;align-items:center;border:1px solid #d9dee9;background:#fff;color:#111;padding:5px 9px;border-radius:10px;font-size:12px;cursor:pointer}
+.popup .foot{display:flex;gap:8px;margin-top:10px}
+
+/* Modal (form) */
+.modal{position:fixed;right:12px;top:72px;z-index:1100;width:min(520px,calc(100vw - 24px));max-height:calc(100vh - 92px);overflow:auto;background:linear-gradient(180deg, rgba(10,15,30,.98), rgba(8,12,24,.96));border:1px solid var(--border);border-radius:16px;padding:14px;box-shadow:var(--shadow);display:none}
+body.light .modal{background:#ffffff}
+.modal h2{margin:.2rem 0 .4rem;font-size:18px}
+body.modal-open .tools{display:none}
+
+/* LOGIN */
+#auth{position:fixed;inset:0;background:radial-gradient(1200px 800px at 30% -10%, rgba(34,211,238,.12), transparent), #060916;display:flex;align-items:center;justify-content:center;z-index:2000}
+body.light #auth{background:radial-gradient(1200px 800px at 30% -10%, rgba(59,130,246,.08), transparent), #f6f7fb}
+.auth-card{width:min(430px,94vw);background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));border:1px solid var(--border);border-radius:18px;padding:18px;box-shadow:var(--shadow)}
+body.light .auth-card{background:#fff}
+.auth-header{display:flex;gap:12px;align-items:center;margin-bottom:10px}
+.auth-header img{height:54px}
+.auth-header h2{margin:0;font-size:20px}
+.help{font-size:12px;color:var(--muted);margin-top:6px}
+
+/* ADMIN APP */
+#adminApp{position:fixed;inset:0;background:radial-gradient(1400px 1000px at 110% -10%, rgba(167,139,250,.10), transparent), #060916;z-index:1900;display:none;color:#e6e9ef}
+body.light #adminApp{background:#fff;color:#0b132b}
+.admin-bar{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--glass);backdrop-filter:blur(10px)}
+.admin-title{display:flex;gap:10px;align-items:center}
+.admin-title img{height:42px}
+.admin-title h2{margin:0;font-size:18px}
+.admin-actions{display:flex;gap:8px}
+.admin-content{padding:14px;display:grid;gap:14px;grid-template-columns:1fr}
+.admin-card{background:var(--glass);border:1px solid var(--border);border-radius:14px;padding:12px}
+.tabs{display:flex;gap:8px;margin-bottom:10px}
+.tab{padding:8px 12px;border:1px solid var(--border);border-radius:10px;background:#0b132b;cursor:pointer}
+body.light .tab{background:#fff}
+.tab.active{background:linear-gradient(135deg,rgba(34,211,238,.22),rgba(167,139,250,.20))}
+.tbl{width:100%;border-collapse:collapse}
+th,td{border:1px solid var(--border);padding:6px 8px;font-size:13px}
+th{background:rgba(255,255,255,.06);text-align:left}
+body.light th{background:#f3f4f6}
+
+/* PRINT */
+#printLayout{display:none}
+@media print{
+  body::before{
+    content:'SAN MATEO ATENCO'; position:fixed; inset:0; display:block; text-align:center; top:42vh;
+    font-size:100px; font-weight:700; color:#000; opacity:0.04; letter-spacing:10px; transform:rotate(-20deg); z-index:0;
+  }
+  .topbar,.panel,.modal,.tools,.toast,.empty,#auth,#adminApp{display:none!important}
+  html,body,#map{height:auto} #map{height:56vh}
+  #printLayout{display:block; padding:8mm 10mm 0; z-index:1; position:relative; color:#111}
+  #printHeader{display:flex; gap:12px; align-items:center; margin-bottom:6mm; border-bottom:1px solid #cdd2dd; padding-bottom:6px}
+  #printHeader img{height:28mm}
+  #printHeader .ph-title h1{margin:0 0 2px 0; font-size:18pt; color:#111}
+  #printMeta{display:flex; gap:14px; margin-top:4px; font-size:10pt; flex-wrap:wrap}
+  #printLegend{display:flex; gap:10px; align-items:center; margin-top:6px}
+  .pl-swatch{width:12px;height:12px;border:1px solid #333;border-radius:3px;display:inline-block}
+  #printSummary{margin-top:6px;font-size:10pt}
+  #printCharts{display:flex; gap:12px; margin-top:6mm; align-items:flex-end}
+  #printCharts canvas{width:140mm; height:60mm}
+  #printQrs{display:flex; gap:18px; align-items:center; margin-top:6mm}
+  #printQrs .qrBox{display:flex; gap:8px; align-items:center}
+  #printQrs canvas{width:28mm; height:28mm; border:1px solid #cdd2dd; border-radius:6px}
+  #printTable{width:100%; border-collapse:collapse; margin-top:8mm; font-size:9.5pt}
+  #printTable th,#printTable td{border:1px solid #d6dae4; padding:6px 8px}
+  #printTable th{background:#eef1f7; text-align:left}
+  body.print-heatmap-only #printTable{display:none}
+}
+</style>
+</head>
+<body>
+<div id="map" aria-label="Mapa de San Mateo Atenco"></div>
+
+<!-- Top bar -->
+<div class="topbar" role="region" aria-label="Barra superior">
+  <div class="brand" role="img" aria-label="Logotipo San Mateo Atenco">
+    <img src="--------------" alt="San Mateo Atenco" />
+    <h1>San Mateo Atenco — Reporte de Incidentes</h1>
+  </div>
+  <div class="top-actions">
+    <span class="chip" id="chipCount" aria-live="polite">Incidentes: 0</span>
+    <span class="chip" id="chipToday" aria-live="polite">Hoy: 0</span>
+    <span class="chip btn-chip" id="btnBackAdmin" style="display:none" role="button" tabindex="0">⟵ Volver a administración</span>
+    <span class="chip btn-chip" id="chipLogout" style="display:none" role="button" tabindex="0">Salir</span>
+    <button class="btn" id="btnTheme" aria-label="Cambiar tema claro/oscuro">Tema</button>
+  </div>
+</div>
+
+<!-- Left panel -->
+<div class="panel" role="region" aria-label="Panel de capas y filtros">
+  <div class="card">
+    <h3>Capas</h3>
+    <div class="row"><label><input id="chk-heat" type="checkbox" checked aria-label="Activar mapa de calor"> Mapa de calor</label><span class="small">dinámico</span></div>
+    <div class="row" style="margin-top:6px"><label><input id="chk-points" type="checkbox" checked aria-label="Mostrar puntos"> Puntos</label><span class="small">visibles</span></div>
+    <div class="legend" style="margin-top:6px" aria-label="Leyenda de severidad">
+      <span class="sw" style="background:var(--good)"></span>Baja (1)
+      <span class="sw" style="background:var(--warn)"></span>Media (2)
+      <span class="sw" style="background:var(--bad)"></span>Alta (3)
+    </div>
+    <div class="actions" style="margin-top:10px">
+      <button class="btn primary" id="btn-nuevo" aria-label="Nuevo incidente">+ Nuevo incidente</button>
+      <button class="btn ghost" id="btn-centrar" aria-label="Centrar mapa">Centrar</button>
+      <button class="btn ghost" id="btn-miubic" aria-label="Ir a mi ubicación">Mi ubicación</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Filtros</h3>
+    <div class="row"><label><input type="checkbox" class="flt" value="1" checked> Baja</label><span></span></div>
+    <div class="row"><label><input type="checkbox" class="flt" value="2" checked> Media</label><span></span></div>
+    <div class="row"><label><input type="checkbox" class="flt" value="3" checked> Alta</label><span></span></div>
+
+    <div class="row" style="margin-top:8px"><input id="busca" type="text" placeholder="Buscar por título o descripción" aria-label="Buscar"/></div>
+    <div class="grid" style="margin-top:8px">
+      <div><label>Desde</label><input id="desde" type="date"></div>
+      <div><label>Hasta</label><input id="hasta" type="date"></div>
+    </div>
+
+    <div class="actions" style="margin-top:8px">
+      <button class="btn" id="btn-draw-rect" aria-label="Dibujar rectángulo para filtrar">Rectángulo</button>
+      <button class="btn" id="btn-draw-poly" aria-label="Dibujar polígono para filtrar">Polígono</button>
+      <button class="btn" id="btn-draw-clear" aria-label="Quitar filtro espacial">Limpiar filtro</button>
+    </div>
+
+    <div class="stats" style="margin-top:8px" aria-live="polite">
+      <div class="stat" id="sBaja">Bajas: 0</div>
+      <div class="stat" id="sMedia">Medias: 0</div>
+      <div class="stat" id="sAlta">Altas: 0</div>
+    </div>
+  </div>
+</div>
+
+<!-- Form Incidente -->
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-label="Formulario de incidente">
+  <h2 id="modal-title">Nuevo incidente</h2>
+  <div class="grid">
+    <div><label>Latitud</label><input id="lat" type="text" placeholder="19.27"/></div>
+    <div><label>Longitud</label><input id="lng" type="text" placeholder="-99.54"/></div>
+  </div>
+  <div style="margin-top:6px">
+    <button class="btn ghost" id="btn-pick" title="Tomar coordenadas desde el mapa" aria-label="Elegir punto en el mapa">Elegir punto en el mapa</button>
+    <span class="small">Un solo clic y luego puedes arrastrar el marcador.</span>
+  </div>
+  <div class="grid" style="margin-top:8px">
+    <div><label>Fecha y hora</label><input id="fecha" type="datetime-local"/></div>
+    <div>
+      <label>Prioridad (severidad)</label>
+      <select id="sev" aria-label="Severidad">
+        <option value="1">Baja</option>
+        <option value="2" selected>Media</option>
+        <option value="3">Alta</option>
+      </select>
+    </div>
+  </div>
+  <div class="grid" style="margin-top:8px">
+    <div>
+      <label>Categoría</label>
+      <select id="cat" aria-label="Categoría">
+        <option>Robo</option><option>Asalto</option><option>Vandalismo</option><option>Extorsión</option><option>Otro</option>
+      </select>
+    </div>
+    <div><label>Título (opcional)</label><input id="titulo" type="text" placeholder="Robo a transeúnte"/></div>
+  </div>
+  <div style="margin-top:8px"><label>Descripción <b>(requerida)</b></label><textarea id="desc" placeholder="Qué pasó, cuándo, señas, etc."></textarea></div>
+  <div style="margin-top:8px">
+    <label>Adjuntar fotos (máx 4)</label>
+    <input id="fotoFile" type="file" accept="image/*" multiple aria-label="Adjuntar fotos"/>
+    <div class="thumbs" id="thumbs" aria-live="polite"></div>
+  </div>
+  <div class="actions">
+    <button class="btn primary" id="btn-guardar">Guardar</button>
+    <button class="btn" id="btn-cancelar">Cancelar</button>
+  </div>
+</div>
+
+<!-- Modal cambio de contraseña (primer inicio o obligatoria) -->
+<div class="modal" id="changePassModal" role="dialog" aria-modal="true" style="display:none">
+  <h2>Cambiar contraseña</h2>
+  <div><label>Nueva contraseña</label><input id="newPass1" type="password" autocomplete="new-password" placeholder="Mín. 8, mayus, min, número"></div>
+  <div style="margin-top:8px"><label>Confirmar contraseña</label><input id="newPass2" type="password" autocomplete="new-password"></div>
+  <div class="actions">
+    <button class="btn primary" id="btn-do-change-pass">Guardar nueva contraseña</button>
+    <button class="btn" id="btn-cancel-change-pass">Cancelar</button>
+  </div>
+  <div class="small">Por seguridad, debes cambiar la contraseña en tu primer acceso o cuando el administrador lo solicite.</div>
+</div>
+
+<!-- Tools -->
+<div class="tools" role="region" aria-label="Herramientas">
+  <button class="btn" id="btn-admin" style="display:none">Administración</button>
+  <button class="btn" id="btn-pdf-table">PDF (tabla filtrada)</button>
+  <button class="btn" id="btn-pdf-heat">PDF (solo heatmap)</button>
+  <button class="btn" id="btn-export-csv">Exportar CSV</button>
+  <button class="btn" id="btn-export-geo">Exportar GeoJSON</button>
+  <label class="btn" for="file-import">Importar GeoJSON</label>
+  <input id="file-import" type="file" accept=".geojson,.json" style="display:none" />
+  <button class="btn" id="btn-reset">Borrar todo</button>
+</div>
+
+<!-- Empty state -->
+<div class="empty" id="emptyBox" role="status" aria-live="polite">
+  <b>Sin incidentes registrados.</b>
+  Usa “+ Nuevo incidente” para agregar el primero y ver los puntos/heatmap.
+</div>
+
+<!-- PRINT LAYOUT -->
+<div id="printLayout">
+  <div id="printHeader">
+    <img src="-------------" alt="">
+    <div class="ph-title">
+      <h1>San Mateo Atenco — Reporte de Incidentes</h1>
+      <div id="printMeta">
+        <span id="printDate"></span>
+        <span id="printRange"></span>
+        <span id="printFilters"></span>
+        <span id="printResp"></span>
+        <span id="printVer"></span>
+      </div>
+      <div id="printLegend">
+        <span class="pl-swatch" style="background:#10b981"></span> Baja
+        <span class="pl-swatch" style="background:#f59e0b"></span> Media
+        <span class="pl-swatch" style="background:#ef4444"></span> Alta
+      </div>
+      <div id="printSummary"></div>
+    </div>
+  </div>
+
+  <div id="printCharts">
+    <canvas id="chartCats" aria-label="Gráfica por categoría"></canvas>
+    <canvas id="chartMeses" aria-label="Gráfica por mes"></canvas>
+  </div>
+
+  <div id="printQrs">
+    <div class="qrBox"><canvas id="qrCsv"></canvas><div>CSV del filtro</div></div>
+    <div class="qrBox"><canvas id="qrGeo"></canvas><div>GeoJSON del filtro</div></div>
+  </div>
+
+  <table id="printTable">
+    <thead>
+      <tr>
+        <th>#</th><th>Fecha/Hora</th><th>Cat.</th><th>Sev</th><th>Título</th><th>Descripción</th><th>Lat</th><th>Lng</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<!-- LOGIN (visible sólo si no hay sesión) -->
+<div id="auth" hidden>
+  <div class="auth-card">
+    <div class="auth-header">
+      <img src="--------------" alt="">
+      <div>
+        <h2>Acceso — San Mateo Atenco</h2>
+        <div class="small">Solo personal autorizado.</div>
+      </div>
+    </div>
+    <label>Usuario o correo</label>
+    <input id="lg-user" type="text" autocomplete="username" value="valencia98745@" />
+    <label style="margin-top:8px">Contraseña</label>
+    <input id="lg-pass" type="password" autocomplete="current-password" />
+    <div class="actions"><button class="btn primary" id="btn-login" type="button">Entrar</button></div>
+    <div class="help">El administrador gestiona altas y cambios de contraseña.</div>
+  </div>
+</div>
+
+<!-- ADMIN APP -->
+<div id="adminApp">
+  <div class="admin-bar">
+    <div class="admin-title">
+      <img src="------" alt="">
+      <h2>Administración — C4 San Mateo Atenco</h2>
+    </div>
+    <div class="admin-actions">
+      <button class="btn" id="btnGoMap" type="button">Ir al mapa</button>
+      <button class="btn" id="btnAdminLogout" type="button">Cerrar sesión</button>
+    </div>
+  </div>
+  <div class="admin-content">
+    <div class="tabs">
+      <div class="tab active" id="tabUsers">Usuarios</div>
+      <div class="tab" id="tabAudit">Bitácora</div>
+    </div>
+
+    <div class="admin-card" id="usersPane">
+      <div class="actions" style="margin-top:0; gap:8px; flex-wrap:wrap">
+        <button class="btn primary" id="btn-add-user" type="button">+ Agregar usuario</button>
+        <input id="usrSearch" type="text" placeholder="Buscar por usuario/nombre/correo" style="max-width:320px" />
+      </div>
+      <table class="tbl" id="usrTable">
+        <thead><tr><th>Usuario</th><th>Nombre</th><th>Correo</th><th>Rol</th><th>Creado</th><th>Acciones</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="admin-card" id="auditPane" style="display:none">
+      <div class="actions" style="margin-top:0; gap:8px; flex-wrap:wrap">
+        <input id="auditSearch" type="text" placeholder="Buscar acción/usuario/detalles" style="max-width:320px"/>
+        <select id="auditType">
+          <option value="">Todas</option>
+          <option value="login">Login</option>
+          <option value="incidente">Incidentes</option>
+          <option value="usuarios">Usuarios</option>
+          <option value="sistema">Sistema</option>
+        </select>
+        <button class="btn" id="btn-audit-hoy" type="button">Hoy</button>
+        <button class="btn" id="btn-audit-7" type="button">7 días</button>
+        <button class="btn" id="btn-audit-30" type="button">30 días</button>
+        <button class="btn" id="btn-export-audit" type="button">Exportar CSV</button>
+      </div>
+      <table class="tbl" id="auditTable">
+        <thead><tr><th>Fecha/Hora</th><th>Usuario</th><th>Tipo</th><th>Acción</th><th>Detalles</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+/* ========= Compatibilidad bcrypt ========= */
+(function(){ if(!window.bcrypt && window.dcodeIO && window.dcodeIO.bcrypt){ window.bcrypt = window.dcodeIO.bcrypt; } })();
+
+/* ======= Disuasivos ======= */
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&['s','u','p'].includes(e.key.toLowerCase())) e.preventDefault();
+  if((e.ctrlKey&&e.shiftKey&&['i','j','c'].includes(e.key.toLowerCase())) || e.key==='F12') e.preventDefault();
+});
+
+/* ========= Tema ========= */
+(function(){
+  const saved=localStorage.getItem('smat_theme');
+  if(saved==='light') document.body.classList.add('light');
+})();
+document.getElementById('btnTheme').addEventListener('click',()=>{
+  document.body.classList.toggle('light');
+  localStorage.setItem('smat_theme', document.body.classList.contains('light')?'light':'dark');
+});
+
+/* ===================== MAPA ===================== */
+const CENTER=[19.27,-99.54], BOUNDS=L.latLngBounds([[19.24,-99.57],[19.30,-99.50]]);
+const map = L.map('map',{zoomControl:true,minZoom:12,maxZoom:19,maxBounds:BOUNDS,maxBoundsViscosity:.7,zoomSnap:.25,zoomDelta:.5}).setView(CENTER,13);
+const base = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'&copy; OpenStreetMap & CartoDB',maxZoom:19,maxNativeZoom:19,noWrap:true}).addTo(map);
+const layerHeat=L.heatLayer([], {radius:26,blur:20,maxZoom:17,minOpacity:.5}).addTo(map);
+const layerPuntos=L.layerGroup().addTo(map);
+map.on('zoomend',()=>{const z=map.getZoom();layerHeat.setOptions({radius:z>17?12:z>16?18:26,blur:z>17?14:z>16?18:22})});
+
+/* ======= Leaflet.draw / filtro espacial ======= */
+const drawnItems = L.featureGroup().addTo(map);
+let spatialFilter = null; // {type:'polygon', latlngs: [...]}
+function clearSpatialFilter(){
+  spatialFilter=null; drawnItems.clearLayers(); render();
+}
+document.getElementById('btn-draw-clear').addEventListener('click', clearSpatialFilter);
+document.getElementById('btn-draw-rect').addEventListener('click', ()=>{
+  new L.Draw.Rectangle(map, {shapeOptions:{color:'#22d3ee'}}).enable();
+});
+document.getElementById('btn-draw-poly').addEventListener('click', ()=>{
+  new L.Draw.Polygon(map, {shapeOptions:{color:'#a78bfa'}}).enable();
+});
+map.on(L.Draw.Event.CREATED, function (e) {
+  drawnItems.clearLayers();
+  const layer = e.layer;
+  drawnItems.addLayer(layer);
+  if(e.layerType==='rectangle'){
+    const b = layer.getBounds();
+    const latlngs = [
+      b.getSouthWest(), L.latLng(b.getSouth(), b.getEast()),
+      b.getNorthEast(), L.latLng(b.getNorth(), b.getWest())
+    ];
+    spatialFilter={type:'polygon', latlngs: latlngs.map(ll=>[ll.lat,ll.lng])};
+  } else if(e.layerType==='polygon'){
+    const latlngs = layer.getLatLngs()[0].map(ll=>[ll.lat,ll.lng]);
+    spatialFilter={type:'polygon', latlngs};
+  }
+  render();
+});
+function pointInPoly(lat,lng,polyLatLngs){
+  // Ray casting
+  let inside=false;
+  for(let i=0,j=polyLatLngs.length-1;i<polyLatLngs.length;j=i++){
+    const xi=polyLatLngs[i][1], yi=polyLatLngs[i][0];
+    const xj=polyLatLngs[j][1], yj=polyLatLngs[j][0];
+    const intersect = ((yi>lat)!=(yj>lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi + 1e-12) + xi);
+    if(intersect) inside=!inside;
+  }
+  return inside;
+}
+
+/* ===================== BD ===================== */
+const db = new PouchDB('smat_incidentes_v6');
+const usersDb = new PouchDB('smat_users_v3');
+const auditDb = new PouchDB('smat_audit_v1');
+if(db.createIndex){ db.createIndex({index:{fields:['type','fecha','sev']}}).catch(()=>{}); }
+let incidentes=[], currentUser=null, isAdmin=false, adminAtMap=false, isViewer=false;
+
+/* ======= Utils ======= */
+const $=q=>document.querySelector(q);
+const toast=$('#toast');
+const esc = s => (s||'').toString().replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+const strip = s => (s||'').toString().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+const keyize = s => (s||'').trim().toLowerCase().replace(/[^a-z0-9_.@-]/g,'');
+const peso = s => s==3?1.0:s==2?0.7:0.45;
+const color = s => s==3?'#ef4444':s==2?'#f59e0b':'#10b981';
+function notify(t){toast.textContent=t;toast.style.display='block';setTimeout(()=>toast.style.display='none',1600)}
+function showAuth(){ const a=$('#auth'); a.hidden=false; a.style.display='flex'; }
+function hideAuth(){ const a=$('#auth'); a.hidden=true; a.style.display='none'; }
+function fileToB64(file){return new Promise((res,rej)=>{const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file);});}
+
+/* ======= Sanitización DOM ======= */
+function safeHTML(input){ return DOMPurify.sanitize(String(input||''), {ALLOWED_TAGS:['b','i','u','br']}); }
+
+/* ======= Sesión persistente + inactividad (24h) + rolling + forzar logout ======= */
+const SESSION_KEY='smat_session_v3';
+const SESSION_TIMEOUT = 24*60*60*1000; // 24h
+const ACTIVITY_THROTTLE = 60*1000; // 1 min
+let lastActivityUpdate = 0;
+
+function setSession(u){
+  const now = Date.now();
+  const data = {user:u.user, role:u.role, key:u.loginKey, ver: (u.sessionVer||0), loginAt: now, lastActive: now};
+  localStorage.setItem(SESSION_KEY, JSON.stringify(data));
+  currentUser=u; isAdmin=(u.role==='admin'); isViewer=(u.role==='viewer');
+  hideAuth();
+  $('#chipLogout').style.display='inline-flex';
+  $('#btn-admin').style.display = isAdmin?'inline-flex':'none';
+  $('#btnBackAdmin').style.display = (isAdmin && adminAtMap)?'inline-flex':'none';
+  $('#btn-nuevo').style.display = isViewer?'none':'inline-flex';
+}
+
+function getSession(){
+  try{
+    const s=JSON.parse(localStorage.getItem(SESSION_KEY)||'null');
+    if(!s) return null;
+    const now=Date.now();
+    if(now - s.lastActive > SESSION_TIMEOUT){ clearSession(); return null; }
+    // Rolling: solo si pasó el throttle
+    if(now - lastActivityUpdate > ACTIVITY_THROTTLE){
+      s.lastActive = now; localStorage.setItem(SESSION_KEY, JSON.stringify(s)); lastActivityUpdate = now;
+    }
+    return s;
+  }catch{return null}
+}
+function clearSession(){ localStorage.removeItem(SESSION_KEY); }
+async function getUserByKey(k){ try{ return await usersDb.get('u_'+k); }catch{return null} }
+// Actualizar "actividad" en cualquier interacción
+['click','keydown','mousemove','touchstart'].forEach(evt=>{
+  window.addEventListener(evt,()=>{ const s=getSession(); if(!s) return; const now=Date.now(); if(now-lastActivityUpdate>ACTIVITY_THROTTLE){ s.lastActive=now; localStorage.setItem(SESSION_KEY, JSON.stringify(s)); lastActivityUpdate=now;} }, {passive:true});
+});
+
+/* ======= Admin por defecto ======= */
+const ADMIN_USER_RAW='valencia98745@';
+const ADMIN_PASS='35874';
+async function createDefaultAdmin(){
+  const key=keyize(ADMIN_USER_RAW);
+  try{ await usersDb.get('u_'+key); }
+  catch{
+    const passHash=(window.bcrypt&&bcrypt.hash)?await bcrypt.hash(ADMIN_PASS,10):ADMIN_PASS;
+    await usersDb.put({_id:'u_'+key,type:'user',user:ADMIN_USER_RAW,loginKey:key,name:'Administrador',mail:'',role:'admin',passHash,createdAt:new Date().toISOString(), mustChangePass:false, sessionVer:0});
+  }
+}
+const adminReady=(async()=>{try{await createDefaultAdmin();}catch{} return true;})();
+
+/* ======= Auditoría ======= */
+async function logAudit(tipo,accion,detalles=''){
+  try{ await auditDb.put({_id:'a_'+Date.now()+'_'+Math.random().toString(36).slice(2,6),type:'audit',when:new Date().toISOString(),user:currentUser?.user||'—',tipo,accion,detalles}); }catch{}
+}
+
+/* ======= Política de contraseñas / bloqueo por intentos / primer cambio ======= */
+function isStrongPassword(p){ return /[A-Z]/.test(p) && /[a-z]/.test(p) && /\d/.test(p) && String(p).length>=8; }
+function getLockInfo(userKey){ try{return JSON.parse(localStorage.getItem('lock_'+userKey)||'null')||{count:0,until:0};}catch{return {count:0,until:0}} }
+function setLockInfo(userKey,info){ localStorage.setItem('lock_'+userKey, JSON.stringify(info)); }
+
+/* ======= Autenticación ======= */
+async function requireAuth(){
+  await adminReady;
+  const s=getSession();
+  if(s){
+    const u=await getUserByKey(s.key);
+    if(u && (s.ver === (u.sessionVer||0))){ setSession(u); if(isAdmin){openAdminUI();} return; }
+    clearSession();
+  }
+  showAuth();
+}
+async function doLogin(){
+  const userIn=$('#lg-user').value.trim();
+  const pass=$('#lg-pass').value;
+  const key=keyize(userIn);
+
+  // Bloqueo por intentos
+  const lk=getLockInfo(key);
+  const now=Date.now();
+  if(lk.until && now<lk.until){ alert('Cuenta bloqueada temporalmente. Intenta más tarde.'); return; }
+
+  // Admin fallback
+  if(userIn===ADMIN_USER_RAW && pass===ADMIN_PASS){
+    createDefaultAdmin().catch(()=>{});
+    const u=await getUserByKey(key);
+    const userDoc = u || {user:ADMIN_USER_RAW,role:'admin',loginKey:key,sessionVer:0,mustChangePass:false};
+    setSession(userDoc); await logAudit('login','exito','fallback-admin');
+    openAdminUI(); notify('Sesión iniciada'); return;
+  }
+
+  await adminReady;
+  const u=await getUserByKey(key);
+  if(!u){ alert('Usuario no existe'); await logAudit('login','fallo','usuario='+userIn); return; }
+
+  let ok=false;
+  if(window.bcrypt&&bcrypt.compare){ try{ ok=await bcrypt.compare(pass,u.passHash); }catch{} }
+  else { ok = (pass===u.passHash); }
+  if(!ok){
+    lk.count = (lk.count||0)+1;
+    if(lk.count>=5){ lk.until = Date.now()+ (15*60*1000); } // 15min
+    setLockInfo(key,lk);
+    alert('Contraseña incorrecta. Intento '+(lk.count||1)+'/5');
+    await logAudit('login','fallo','usuario='+userIn);
+    return;
+  }
+  // Reset lock
+  setLockInfo(key,{count:0,until:0});
+
+  setSession(u); await logAudit('login','exito','usuario='+u.user);
+  if(u.mustChangePass){ openChangePassModal(u); return; }
+  if(isAdmin) openAdminUI(); else notify('Sesión iniciada');
+}
+$('#btn-login').addEventListener('click',doLogin);
+$('#lg-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
+$('#chipLogout').addEventListener('click', async ()=>{ await logAudit('login','logout'); clearSession(); location.reload(); });
+
+/* ======= Modal cambio de contraseña ======= */
+function openChangePassModal(u){
+  const m=$('#changePassModal'); m.style.display='block'; document.body.classList.add('modal-open');
+  $('#btn-cancel-change-pass').onclick=()=>{ m.style.display='none'; document.body.classList.remove('modal-open'); };
+  $('#btn-do-change-pass').onclick=async()=>{
+    const p1=$('#newPass1').value, p2=$('#newPass2').value;
+    if(p1!==p2) return alert('Las contraseñas no coinciden.');
+    if(!isStrongPassword(p1)) return alert('La contraseña debe tener mínimo 8 caracteres, mayúscula, minúscula y número.');
+    const passHash=(window.bcrypt&&bcrypt.hash)?await bcrypt.hash(p1,10):p1;
+    const fresh=await usersDb.get(u._id);
+    await usersDb.put({...fresh, passHash, mustChangePass:false, updatedAt:new Date().toISOString()});
+    m.style.display='none'; document.body.classList.remove('modal-open');
+    notify('Contraseña actualizada'); await logAudit('usuarios','cambio_pass','self');
+    if(isAdmin) openAdminUI(); else notify('Sesión iniciada');
+  };
+}
+
+/* ======= ADMIN UI ======= */
+const adminApp=$('#adminApp');
+function openAdminUI(){ adminAtMap=false; adminApp.style.display='block'; $('#btnBackAdmin').style.display='none'; openUsers(); }
+function goMapFromAdmin(){ adminApp.style.display='none'; adminAtMap=true; $('#btnBackAdmin').style.display='inline-flex'; notify('Vista de mapa'); }
+$('#btnGoMap').addEventListener('click',goMapFromAdmin);
+$('#btnBackAdmin').addEventListener('click',()=>{ if(isAdmin){ openAdminUI(); } });
+$('#btnAdminLogout').addEventListener('click', async ()=>{ await logAudit('login','logout'); clearSession(); location.reload(); });
+$('#btn-admin').addEventListener('click', ()=>{ if(isAdmin) openAdminUI(); });
+
+/* Tabs admin */
+$('#tabUsers').addEventListener('click',()=>{ $('#tabUsers').classList.add('active'); $('#tabAudit').classList.remove('active'); $('#usersPane').style.display='block'; $('#auditPane').style.display='none'; });
+$('#tabAudit').addEventListener('click',()=>{ $('#tabAudit').classList.add('active'); $('#tabUsers').classList.remove('active'); $('#usersPane').style.display='none'; $('#auditPane').style.display='block'; loadAudit(); });
+
+/* ======= Gestión de usuarios ======= */
+let usersCache=[];
+async function loadUsers(){ const res=await usersDb.allDocs({include_docs:true}); usersCache=res.rows.filter(r=>r.doc.type==='user').map(r=>r.doc); }
+function drawUsers(){
+  const q=strip($('#usrSearch').value);
+  const tb=$('#usrTable tbody');
+  tb.innerHTML = usersCache.filter(u=>!q || strip(u.user).includes(q) || strip(u.name).includes(q) || strip(u.mail).includes(q))
+    .map(u=>`<tr>
+      <td>${esc(u.user)}</td><td>${esc(u.name||'')}</td><td>${esc(u.mail||'')}</td><td>${esc(u.role||'user')}</td>
+      <td>${new Date(u.createdAt||u.updatedAt||Date.now()).toLocaleDateString()}</td>
+      <td>
+        <button class="btn" onclick="editUser('${u._id}')">Editar</button>
+        <button class="btn" onclick="resetPass('${u._id}')">Cambiar pass</button>
+        <button class="btn" onclick="forceLogout('${u._id}')">Forzar logout</button>
+        <button class="btn" onclick="delUser('${u._id}')" ${currentUser?.loginKey===u.loginKey?'disabled':''}>Eliminar</button>
+      </td>
+    </tr>`).join('');
+}
+$('#usrSearch').addEventListener('input',drawUsers);
+async function openUsers(){ await loadUsers(); drawUsers(); }
+window.addUserPrompt = async function(){
+  const user = prompt('Usuario (sin espacios, minúsculas):'); if(!user) return;
+  const name = prompt('Nombre completo:')||'';
+  const mail = prompt('Correo:')||'';
+  let role = prompt('Rol (admin/user/viewer):','user'); role = ['admin','user','viewer'].includes(role)?role:'user';
+  const pass = prompt('Contraseña temporal (mín. 8, A a 9):'); if(!pass) return;
+  if(!isStrongPassword(pass)) return alert('Contraseña temporal no cumple política.');
+  const key=keyize(user);
+  try{ await usersDb.get('u_'+key); alert('Usuario ya existe'); return; }catch{}
+  const passHash=(window.bcrypt&&bcrypt.hash)?await bcrypt.hash(pass,10):pass;
+  await usersDb.put({_id:'u_'+key,type:'user',user,loginKey:key,name,mail,role,passHash,createdAt:new Date().toISOString(),mustChangePass:true,sessionVer:0});
+  await openUsers(); notify('Usuario creado'); await logAudit('usuarios','alta',`user=${user}`);
+}
+window.editUser = async function(id){
+  const u=await usersDb.get(id);
+  const name=prompt('Nombre:',u.name||''); if(name===null) return;
+  const mail=prompt('Correo:',u.mail||''); if(mail===null) return;
+  let role=prompt('Rol (admin/user/viewer):',u.role||'user'); role=['admin','user','viewer'].includes(role)?role:'user';
+  await usersDb.put({...u,name,mail,role,updatedAt:new Date().toISOString()});
+  await openUsers(); notify('Actualizado'); await logAudit('usuarios','editar',`user=${u.user}`);
+}
+window.resetPass = async function(id){
+  const u=await usersDb.get(id); const np=prompt('Nueva contraseña para '+u.user+':'); if(!np) return;
+  if(!isStrongPassword(np)) return alert('No cumple política (8+, mayus/min/número).');
+  const passHash=(window.bcrypt&&bcrypt.hash)?await bcrypt.hash(np,10):np;
+  await usersDb.put({...u,passHash,mustChangePass:false,updatedAt:new Date().toISOString()});
+  notify('Contraseña actualizada'); await logAudit('usuarios','pass',`user=${u.user}`);
+}
+window.forceLogout = async function(id){
+  const u=await usersDb.get(id);
+  await usersDb.put({...u, sessionVer: (u.sessionVer||0)+1, updatedAt:new Date().toISOString()});
+  notify('Sesiones de '+u.user+' invalidadas'); await logAudit('usuarios','force_logout',`user=${u.user}`);
+}
+window.delUser = async function(id){
+  if(!confirm('¿Eliminar usuario?')) return;
+  const u=await usersDb.get(id); if(currentUser?.loginKey===u.loginKey) return alert('No puedes eliminar tu propia cuenta abierta');
+  await usersDb.remove(u); await openUsers(); notify('Eliminado'); await logAudit('usuarios','baja',`user=${u.user}`);
+}
+$('#btn-add-user').addEventListener('click',addUserPrompt);
+
+/* ======= Bitácora ======= */
+let auditCache=[], auditDateLimit=null;
+async function loadAudit(){ const res=await auditDb.allDocs({include_docs:true,descending:true}); auditCache=res.rows.map(r=>r.doc).sort((a,b)=>new Date(b.when)-new Date(a.when)); drawAudit(); }
+function drawAudit(){
+  const q=strip($('#auditSearch').value), t=$('#auditType').value;
+  const tb=$('#auditTable tbody');
+  tb.innerHTML = auditCache.filter(a=>{
+    if(auditDateLimit && new Date(a.when) < auditDateLimit) return false;
+    return (!t||a.tipo===t)&&(!q||(strip(a.user).includes(q)||strip(a.accion).includes(q)||strip(a.detalles).includes(q)));
+  }).map(a=>`<tr><td>${new Date(a.when).toLocaleString()}</td><td>${esc(a.user)}</td><td>${esc(a.tipo)}</td><td>${esc(a.accion)}</td><td>${esc(a.detalles||'')}</td></tr>`).join('');
+}
+$('#auditSearch').addEventListener('input',drawAudit);
+$('#auditType').addEventListener('change',drawAudit);
+$('#btn-audit-hoy').addEventListener('click',()=>{const d=new Date(); d.setHours(0,0,0,0); auditDateLimit=d; drawAudit();});
+$('#btn-audit-7').addEventListener('click',()=>{const d=new Date(Date.now()-7*24*3600*1000); auditDateLimit=d; drawAudit();});
+$('#btn-audit-30').addEventListener('click',()=>{const d=new Date(Date.now()-30*24*3600*1000); auditDateLimit=d; drawAudit();});
+$('#btn-export-audit').addEventListener('click', ()=> {
+  const rows=[['when','user','tipo','accion','detalles']].concat(auditCache.map(a=>[a.when,a.user,a.tipo,a.accion,(a.detalles||'').replace(/"/g,'""')]));
+  const csv=rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\n');
+  descargar('bitacora.csv',csv);
+});
+
+/* ======= Carga de incidentes ======= */
+async function cargarDocs(){ const res=await db.allDocs({include_docs:true}); incidentes=res.rows.filter(r=>r.doc.type==='incidente').map(r=>r.doc); render(); }
+db.changes({since:'now',live:true,include_docs:true}).on('change',c=>{ if(c.doc?.type!=='incidente') return; const i=incidentes.findIndex(x=>x._id===c.doc._id); if(c.deleted){ if(i>-1) incidentes.splice(i,1); } else { if(i>-1) incidentes[i]=c.doc; else incidentes.push(c.doc); } render(); });
+
+/* ======= Filtros y render ======= */
+const filtros=new Set(['1','2','3']);
+['busca','desde','hasta'].forEach(id=>document.getElementById(id).addEventListener('input',render));
+document.querySelectorAll('.flt').forEach(c=>c.addEventListener('change',()=>{c.checked?filtros.add(c.value):filtros.delete(c.value);render()}));
+
+/* Persistencia filtros */
+window.addEventListener('beforeunload',()=>{
+  localStorage.setItem('smat_filters', JSON.stringify({
+    busca:$('#busca').value, desde:$('#desde').value, hasta:$('#hasta').value,
+    sev:[...filtros], spatial: spatialFilter
+  }));
+});
+window.addEventListener('load',()=>{
+  try{
+    const f=JSON.parse(localStorage.getItem('smat_filters')||'null');
+    if(f){
+      $('#busca').value=f.busca||''; $('#desde').value=f.desde||''; $('#hasta').value=f.hasta||'';
+      document.querySelectorAll('.flt').forEach(c=>{ c.checked = (f.sev||['1','2','3']).includes(c.value); if(c.checked) filtros.add(c.value); else filtros.delete(c.value); });
+      if(f.spatial && f.spatial.latlngs){
+        spatialFilter=f.spatial;
+        const poly=L.polygon(f.spatial.latlngs.map(p=>L.latLng(p[0],p[1])), {color:'#22d3ee'}); drawnItems.addLayer(poly);
+      }
+    }
+  }catch{}
+});
+
+/* Lazy images en popups: setear src al abrir */
+map.on('popupopen', e=>{
+  e.popup._contentNode.querySelectorAll('img[data-src]').forEach(img=>{
+    img.setAttribute('src', img.getAttribute('data-src'));
+    img.removeAttribute('data-src');
+  });
+});
+
+function getFiltrados(list=incidentes){
+  const q=strip($('#busca').value.trim());
+  const d1=$('#desde').value?new Date($('#desde').value):null;
+  const d2=$('#hasta').value?new Date($('#hasta').value+'T23:59'):null;
+  return list.filter(r=>{
+    if(!filtros.has(String(r.sev))) return false;
+    if(q && !(strip(r.titulo).includes(q)||strip(r.desc).includes(q)||strip(r.cat).includes(q))) return false;
+    const t=new Date(r.fecha); if(d1&&t<d1) return false; if(d2&&t>d2) return false;
+    if(spatialFilter && spatialFilter.type==='polygon'){
+      if(!pointInPoly(r.lat, r.lng, spatialFilter.latlngs)) return false;
+    }
+    return true;
+  }).sort((a,b)=>new Date(b.fecha)-new Date(a.fecha));
+}
+
+const emptyBox=$('#emptyBox');
+function render(){
+  emptyBox.style.display = incidentes.length?'none':'block';
+  const rows=getFiltrados();
+  layerPuntos.clearLayers(); const heat=[];
+  rows.forEach(r=>{
+    const sevTxt=r.sev==3?'Alta':r.sev==2?'Media':'Baja';
+    const sevClass=r.sev==3?'red':r.sev==2?'amber':'green';
+    const fotos=(r.fotos||[]).map(src=>`<img data-src="${esc(src)}" loading="lazy" alt="foto" />`).join('');
+    const html=`<div class="popup">
+      ${r.titulo?`<div class="head"><div class="title">${safeHTML(r.titulo)}</div></div>`:''}
+      <div class="date">${new Date(r.fecha).toLocaleString()}</div>
+      <div class="pills"><span class="pill">${esc(r.cat)}</span><span class="pill ${sevClass}">Severidad: ${sevTxt}</span></div>
+      <div class="meta-row"><span class="k">Lat/Lng:</span> ${Number(r.lat).toFixed(6)}, ${Number(r.lng).toFixed(6)} <button class="btn-line" onclick="addr(${r.lat},${r.lng},this)" style="margin-left:6px">🔎 ver dirección</button></div>
+      <div class="meta-row"><span class="k">Desc:</span> ${safeHTML(r.desc||'—')}</div>
+      ${fotos}
+      ${isViewer? '' : `<div class="foot"><button class="btn-mini" onclick="editar('${r._id}')">Editar</button><button class="btn-mini" onclick="eliminar('${r._id}')">Eliminar</button></div>`}
+    </div>`;
+    L.circleMarker([r.lat,r.lng],{radius:7,color:'#121725',weight:2,fillColor:color(r.sev),fillOpacity:.95}).bindPopup(html).addTo(layerPuntos);
+    heat.push([r.lat,r.lng,peso(r.sev)]);
+  });
+  layerHeat.setLatLngs(heat);
+  $('#chipCount').textContent=`Incidentes: ${incidentes.length}`;
+  const today=new Date().toISOString().slice(0,10);
+  $('#chipToday').textContent=`Hoy: ${incidentes.filter(r=>(r.fecha||'').slice(0,10)===today).length}`;
+  $('#sBaja').textContent=`Bajas: ${incidentes.filter(r=>r.sev==1).length}`;
+  $('#sMedia').textContent=`Medias: ${incidentes.filter(r=>r.sev==2).length}`;
+  $('#sAlta').textContent=`Altas: ${incidentes.filter(r=>r.sev==3).length}`;
+}
+
+/* ======= Reverse geocoding ======= */
+const addrCache = JSON.parse(localStorage.getItem('smat_addr_cache')||'{}');
+function saveAddrCache(){ localStorage.setItem('smat_addr_cache', JSON.stringify(addrCache)); }
+async function addr(lat,lng,btn){
+  const key=lat.toFixed(5)+','+lng.toFixed(5);
+  if(addrCache[key]){ btn.outerHTML=`<span>📍 ${esc(addrCache[key])}</span>`; return; }
+  btn.textContent='buscando…';
+  try{
+    const url=`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`;
+    const res=await fetch(url,{headers:{'Accept':'application/json'}}); const j=await res.json();
+    const text=j.display_name || 'sin dirección'; addrCache[key]=text; saveAddrCache();
+    btn.outerHTML=`<span>📍 ${esc(text)}</span>`;
+  }catch{ btn.textContent='intenta de nuevo'; }
+}
+
+/* ======= Interacción UI ======= */
+$('#btn-nuevo').addEventListener('click',()=>{ if(isViewer) return alert('Rol visor: solo lectura'); abrir('Nuevo incidente'); });
+$('#btn-cancelar').addEventListener('click',()=>{ $('#modal').style.display='none'; document.body.classList.remove('modal-open'); });
+$('#btn-guardar').addEventListener('click',guardarForm);
+$('#btn-centrar').addEventListener('click',()=>map.fitBounds(BOUNDS.pad(-.08)));
+$('#btn-miubic').addEventListener('click',()=>{ if(!navigator.geolocation) return alert('Geolocalización no disponible'); navigator.geolocation.getCurrentPosition(p=>map.setView([p.coords.latitude,p.coords.longitude],16),()=>alert('No se pudo obtener tu ubicación')); });
+
+// Atajos: N nuevo, C centrar, / buscar
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') { if(e.key==='/'){ $('#busca').focus(); e.preventDefault(); } return; }
+  if(e.key==='n'||e.key==='N'){ $('#btn-nuevo').click(); }
+  if(e.key==='c'||e.key==='C'){ $('#btn-centrar').click(); }
+  if(e.key==='/'){ $('#busca').focus(); e.preventDefault(); }
+});
+
+/* ======= Pick coords con marcador arrastrable ======= */
+let pickCursorOld='', pickMarker=null;
+$('#btn-pick').addEventListener('click',()=>{
+  notify('Haz clic en el mapa, luego arrastra el marcador para precisión');
+  pickCursorOld=map._container.style.cursor; map._container.style.cursor='crosshair';
+  map.once('click',e=>{
+    $('#lat').value=e.latlng.lat.toFixed(6); $('#lng').value=e.latlng.lng.toFixed(6);
+    if(pickMarker) map.removeLayer(pickMarker);
+    pickMarker=L.marker(e.latlng,{draggable:true});
+    pickMarker.on('dragend', ev=>{
+      const ll=ev.target.getLatLng(); $('#lat').value=ll.lat.toFixed(6); $('#lng').value=ll.lng.toFixed(6);
+    });
+    pickMarker.addTo(map);
+    map._container.style.cursor=pickCursorOld||''; notify('Coordenadas capturadas (editable)');
+  });
+});
+
+$('#chk-heat').addEventListener('change',ev=>ev.target.checked?map.addLayer(layerHeat):map.removeLayer(layerHeat));
+$('#chk-points').addEventListener('change',ev=>ev.target.checked?map.addLayer(layerPuntos):map.removeLayer(layerPuntos));
+
+/* ======= Form y fotos (redimensionar/comprimir) ======= */
+const F={lat:$('#lat'),lng:$('#lng'),fecha:$('#fecha'),sev:$('#sev'),cat:$('#cat'),titulo:$('#titulo'),desc:$('#desc'),fotoFile:$('#fotoFile'),thumbs:$('#thumbs')};
+F.fecha.value=new Date().toISOString().slice(0,16);
+
+async function resizeImage(file, maxW=900, maxH=700, quality=0.72){
+  return new Promise(res=>{
+    const img=new Image();
+    img.onload=()=>{
+      let w=img.width, h=img.height;
+      if(w>maxW || h>maxH){ const s=Math.min(maxW/w, maxH/h); w=Math.round(w*s); h=Math.round(h*s); }
+      const canvas=document.createElement('canvas'); canvas.width=w; canvas.height=h;
+      const ctx=canvas.getContext('2d'); ctx.drawImage(img,0,0,w,h);
+      res(canvas.toDataURL('image/jpeg',quality));
+    };
+    img.src=URL.createObjectURL(file);
+  });
+}
+
+F.fotoFile.addEventListener('change',async ev=>{
+  F.thumbs.innerHTML='';
+  for(const file of [...ev.target.files].slice(0,4)){
+    const b64=await resizeImage(file); // comprimida
+    const img=new Image(); img.src=b64; img.alt='miniatura';
+    F.thumbs.appendChild(img);
+  }
+});
+function fotosDeForm(){return [...F.thumbs.querySelectorAll('img')].map(i=>i.src).slice(0,4);}
+function abrir(t){$('#modal-title').textContent=t; F.fecha.value=new Date().toISOString().slice(0,16); $('#modal').style.display='block'; document.body.classList.add('modal-open');}
+function limpiar(){F.titulo.value='';F.desc.value='';F.fotoFile.value='';F.thumbs.innerHTML='';F.sev.value='2';F.cat.value='Robo';}
+
+async function guardarForm(){
+  if(isViewer) return alert('Rol visor: solo lectura');
+  const lat=parseFloat(F.lat.value), lng=parseFloat(F.lng.value);
+  if(!isFinite(lat)||!isFinite(lng)) return alert('Lat/Lng requeridas');
+  if(!F.fecha.value) return alert('Fecha requerida');
+  if(!F.desc.value.trim()) return alert('Descripción requerida');
+  const doc={ _id:'inc_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), type:'incidente',
+    lat,lng, fecha:new Date(F.fecha.value).toISOString(), sev:parseInt(F.sev.value,10), cat:F.cat.value,
+    titulo:F.titulo.value.trim(), desc:F.desc.value.trim(), fotos:fotosDeForm(),
+    createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), user: currentUser?.user||'—' };
+  await db.put(doc); await logAudit('incidente','crear',`id=${doc._id}; sev=${doc.sev}; cat=${doc.cat}`);
+  $('#modal').style.display='none'; document.body.classList.remove('modal-open'); notify('Incidente guardado'); limpiar();
+}
+window.eliminar=async id=>{ if(isViewer) return alert('Rol visor: solo lectura'); if(!confirm('¿Eliminar este incidente?')) return; const d=await db.get(id); await db.remove(d); await logAudit('incidente','eliminar',`id=${id}`); notify('Eliminado'); }
+window.editar=async id=>{
+  if(isViewer) return alert('Rol visor: solo lectura');
+  const r=await db.get(id); abrir('Editar incidente');
+  F.lat.value=r.lat;F.lng.value=r.lng;F.fecha.value=new Date(r.fecha).toISOString().slice(0,16);F.sev.value=String(r.sev);F.cat.value=r.cat;F.titulo.value=r.titulo||'';F.desc.value=r.desc||'';
+  F.thumbs.innerHTML='';(r.fotos||[]).forEach(src=>{const i=new Image();i.src=src;F.thumbs.appendChild(i)});
+  const btn=$('#btn-guardar'), old=btn.onclick; btn.textContent='Actualizar';
+  btn.onclick=async()=>{
+    const lat=parseFloat(F.lat.value),lng=parseFloat(F.lng.value);
+    if(!isFinite(lat)||!isFinite(lng)) return alert('Lat/Lng requeridas');
+    if(!F.fecha.value) return alert('Fecha requerida');
+    if(!F.desc.value.trim()) return alert('Descripción requerida');
+    await db.put({...r,lat,lng,fecha:new Date(F.fecha.value).toISOString(),sev:parseInt(F.sev.value,10),cat:F.cat.value,titulo:F.titulo.value.trim(),desc:F.desc.value.trim(),fotos:fotosDeForm(),updatedAt:new Date().toISOString()});
+    await logAudit('incidente','editar',`id=${r._id}`); $('#modal').style.display='none'; document.body.classList.remove('modal-open'); notify('Actualizado'); btn.textContent='Guardar'; btn.onclick=old; limpiar();
+  }
+}
+
+/* ======= Export/Import/Reset ======= */
+$('#btn-export-geo').addEventListener('click',async()=>{
+  const all=getFiltrados(incidentes);
+  const fc={type:'FeatureCollection',features:all.map(it=>({type:'Feature',properties:{titulo:it.titulo,categoria:it.cat,severidad:it.sev,descripcion:it.desc,fecha:it.fecha,fotos:it.fotos||[]},geometry:{type:'Point',coordinates:[it.lng,it.lat]}}))};
+  descargar('incidentes-san-mateo.geojson',JSON.stringify(fc,null,2));
+});
+$('#btn-export-csv').addEventListener('click',async()=>{
+  const headers=['lat','lng','fecha','sev','cat','titulo','desc'];
+  const all=getFiltrados(incidentes);
+  const rows=all.map(it=>headers.map(k=>`"${String(it[k]??'').replace(/\\"/g,'""')}"`).join(',')).join('\n');
+  descargar('incidentes-san-mateo.csv',headers.join(',')+'\n'+rows);
+});
+$('#file-import').addEventListener('change',async ev=>{
+  const file=ev.target.files?.[0]; if(!file) return;
+  try{
+    const text=await file.text(); const json=JSON.parse(text);
+    if(json.type!=='FeatureCollection') throw new Error('GeoJSON inválido');
+    const nuevos=(json.features||[]).filter(f=>f.geometry?.type==='Point').map(f=>{
+      const p=f.properties||{};
+      return {_id:'inc_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),type:'incidente',
+        lat:Number(f.geometry.coordinates[1]),lng:Number(f.geometry.coordinates[0]),
+        fecha:(p.fecha||new Date().toISOString()),cat:String(p.categoria||'Otro'),sev:parseInt(p.severidad||'2',10),
+        titulo:String(p.titulo||''),desc:String(p.descripcion||''),fotos:Array.isArray(p.fotos)?p.fotos.filter(x=>/^data:image/.test(x)).slice(0,4):[],
+        createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()};
+    });
+    await db.bulkDocs(nuevos); await logAudit('sistema','importar',`nuevos=${nuevos.length}`); notify('Importado'); ev.target.value='';
+  }catch(e){ alert('No se pudo importar el GeoJSON.'); }
+});
+$('#btn-reset').addEventListener('click',async()=>{
+  if(!confirm('Esto borrará todos los incidentes.')) return;
+  const all=await db.allDocs(); await Promise.all(all.rows.map(r=>db.remove(r.id,r.value.rev)));
+  await logAudit('sistema','borrar_todo'); notify('Limpio');
+});
+
+/* ======= PDF (con gráficos y QR) ======= */
+let chartCats=null, chartMeses=null;
+function buildCsvString(list){
+  const headers=['lat','lng','fecha','sev','cat','titulo','desc'];
+  const rows=list.map(it=>headers.map(k=>String(it[k]??'').replace(/"/g,'""')).map(v=>`"${v}"`).join(',')).join('\n');
+  return headers.join(',')+'\n'+rows;
+}
+function buildGeoJSON(list){
+  return JSON.stringify({type:'FeatureCollection',features:list.map(it=>({type:'Feature',properties:{titulo:it.titulo,categoria:it.cat,severidad:it.sev,descripcion:it.desc,fecha:it.fecha},geometry:{type:'Point',coordinates:[it.lng,it.lat]}}))});
+}
+function buildQrOrFallback(qrCanvas, text){
+  // Si es demasiado largo (QR ~1800 chars), ponemos una instrucción
+  if(text.length>1800){ new QRious({element:qrCanvas, value:'Abrir app → Exportar con mismos filtros'}); return; }
+  new QRious({element:qrCanvas, value:text});
+}
+function prepPrintRows(list){
+  const fmt=d=>new Date(d).toLocaleString();
+  $('#printDate').textContent='Generado: '+new Date().toLocaleString();
+  const rFrom=$('#desde').value||'—', rTo=$('#hasta').value||'—';
+  $('#printRange').textContent='Rango: '+rFrom+' a '+rTo;
+  const selected=['1','2','3'].filter(x=>filtros.has(x)).map(x=>x==='1'?'Baja':x==='2'?'Media':'Alta').join(', ')||'N/A';
+  $('#printFilters').textContent='Severidad: '+selected;
+  $('#printResp').textContent='Responsable: '+(currentUser?.user||'—');
+  $('#printVer').textContent='Versión sistema: v1.6';
+
+  const c1=incidentes.filter(r=>r.sev==1).length,c2=incidentes.filter(r=>r.sev==2).length,c3=incidentes.filter(r=>r.sev==3).length;
+  $('#printSummary').textContent = `Resumen — Total: ${incidentes.length} | Bajas: ${c1} | Medias: ${c2} | Altas: ${c3}`;
+
+  const tb=document.querySelector('#printTable tbody');
+  tb.innerHTML=list.map((r,i)=>`<tr><td>${i+1}</td><td>${fmt(r.fecha)}</td><td>${esc(r.cat)}</td><td>${r.sev}</td><td>${esc(r.titulo||'')}</td><td>${esc(r.desc||'')}</td><td>${Number(r.lat).toFixed? Number(r.lat).toFixed(5): r.lat}</td><td>${Number(r.lng).toFixed? Number(r.lng).toFixed(5): r.lng}</td></tr>`).join('');
+
+  // Gráficas
+  const ctx1=document.getElementById('chartCats').getContext('2d');
+  const ctx2=document.getElementById('chartMeses').getContext('2d');
+  if(chartCats){ chartCats.destroy(); } if(chartMeses){ chartMeses.destroy(); }
+  const catsCount={}; list.forEach(r=>{ catsCount[r.cat]=(catsCount[r.cat]||0)+1; });
+  chartCats=new Chart(ctx1,{type:'bar',data:{labels:Object.keys(catsCount),datasets:[{label:'Incidentes por categoría',data:Object.values(catsCount)}]},options:{responsive:false,plugins:{legend:{display:false}}}});
+  const monthsCount={}; list.forEach(r=>{ const k=(new Date(r.fecha).getFullYear())+'-'+String(new Date(r.fecha).getMonth()+1).padStart(2,'0'); monthsCount[k]=(monthsCount[k]||0)+1; });
+  const mLabels=Object.keys(monthsCount).sort();
+  chartMeses=new Chart(ctx2,{type:'bar',data:{labels:mLabels,datasets:[{label:'Incidentes por mes',data:mLabels.map(k=>monthsCount[k])}]},options:{responsive:false,plugins:{legend:{display:false}}}});
+
+  // QR de CSV/GeoJSON (data: URIs si caben)
+  const csv = buildCsvString(list);
+  const geo = buildGeoJSON(list);
+  const csvDataUrl = 'data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
+  const geoDataUrl = 'data:application/geo+json;charset=utf-8,'+encodeURIComponent(geo);
+  buildQrOrFallback(document.getElementById('qrCsv'), csvDataUrl);
+  buildQrOrFallback(document.getElementById('qrGeo'), geoDataUrl);
+}
+function printNow(heatOnly=false){
+  document.body.classList.toggle('print-heatmap-only', heatOnly);
+  window.print();
+  if(window.L && L.easyPrint && heatOnly){
+    const printer=L.easyPrint({tileLayer:base,sizeModes:['A4Landscape'],exportOnly:true,filename:'mapa-san-mateo'}).addTo(map);
+    setTimeout(()=>printer.printMap('A4Landscape','Mapa'),300);
+  }
+}
+$('#btn-pdf-table').addEventListener('click',()=>{ const filtered=getFiltrados(); prepPrintRows(filtered); printNow(false); });
+$('#btn-pdf-heat').addEventListener('click',()=>{ prepPrintRows([]); printNow(true); });
+
+/* ======= Inicio ======= */
+function init(){
+  requireAuth().then(()=>{
+    openUsers(); // precarga admin
+    cargarDocs();
+    setTimeout(()=>map.invalidateSize(),250);
+    map.fitBounds(BOUNDS.pad(-.10));
+  });
+}
+init();
+
+/* ======= Helpers ======= */
+function descargar(nombre,contenido){ const blob=new Blob([contenido],{type:'application/octet-stream'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=nombre; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),800); }
+</script>
+</body>
+</html>
